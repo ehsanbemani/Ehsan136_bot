@@ -1,93 +1,76 @@
-import requests
+import logging
 import pandas as pd
-import numpy as np
-import talib
+import pandas_ta as ta
+import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# دریافت داده از tsetmc
-def get_stock_data(inscode):
-    url = f'https://www.tsetmc.com/tsev2/data/InstTradeHistory.aspx?i={inscode}&t=1'
-    r = requests.get(url)
-    lines = r.text.split(';')
-    data = [line.split('@') for line in lines if line]
-    df = pd.DataFrame(data, columns=["date", "high", "low", "close", "open", "last", "volume"])
-    df = df.astype({"high": float, "low": float, "close": float, "open": float, "volume": float})
-    df = df[::-1].reset_index(drop=True)
+# توکن ربات
+TOKEN = "7899158333:AAFNxophK13V7aFE2OpCGE968M5XdyW1MGk"
+
+# فعال‌سازی لاگ
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# تابع برای دریافت داده‌های ساختگی سهم (جایگزین کن با API واقعی TSETMC در آینده)
+def get_stock_data():
+    # داده فرضی
+    data = {
+        'close': [100, 105, 102, 108, 110, 115, 120, 118, 125, 130, 135, 138, 140],
+        'volume': [2000, 2100, 2200, 5000, 2500, 3000, 10000, 3200, 3300, 4000, 6000, 6200, 6400]
+    }
+    df = pd.DataFrame(data)
     return df
 
-# محاسبه اندیکاتورها
-def calculate_indicators(df):
-    close = df['close'].values
-    high = df['high'].values
-    low = df['low'].values
+# تحلیل سهم با اندیکاتورها
+def analyze_stock():
+    df = get_stock_data()
+    
+    # اندیکاتورهای پایه
+    df['rsi'] = ta.rsi(df['close'], length=14)
+    macd = ta.macd(df['close'])
+    df = pd.concat([df, macd], axis=1)
+    df['ema_9'] = ta.ema(df['close'], length=9)
+    
+    # حجم مشکوک
+    average_volume = df['volume'].rolling(window=5).mean()
+    df['suspicious_volume'] = df['volume'] > (1.8 * average_volume)
 
-    indicators = {}
-    indicators['rsi'] = talib.RSI(close)
-    indicators['macd'], indicators['macdsignal'], _ = talib.MACD(close)
-    indicators['ma20'] = talib.SMA(close, timeperiod=20)
-    indicators['ma50'] = talib.SMA(close, timeperiod=50)
-    indicators['ichimoku_a'] = (talib.SMA(high, 9) + talib.SMA(low, 9)) / 2
-    indicators['ichimoku_b'] = (talib.SMA(high, 26) + talib.SMA(low, 26)) / 2
-    return indicators
+    last = df.iloc[-1]
+    signals = []
 
-# تولید سیگنال
-def generate_signal(df, ind):
-    close = df['close'].values
-    if len(close) < 50:
-        return "داده کافی برای تحلیل نیست."
+    # بررسی RSI
+    if last['rsi'] < 30:
+        signals.append("RSI: اشباع فروش (احتمال ورود)")
+    elif last['rsi'] > 70:
+        signals.append("RSI: اشباع خرید (احتمال خروج)")
 
-    if (
-        ind['macd'][-1] > ind['macdsignal'][-1] and
-        ind['rsi'][-1] > 50 and
-        close[-1] > ind['ma20'][-1] > ind['ma50'][-1] and
-        close[-1] > ind['ichimoku_a'][-1] and
-        close[-1] > ind['ichimoku_b'][-1]
-    ):
-        return "سیگنال ورود"
-    elif (
-        ind['macd'][-1] < ind['macdsignal'][-1] and
-        ind['rsi'][-1] < 50 and
-        close[-1] < ind['ma20'][-1] < ind['ma50'][-1] and
-        close[-1] < ind['ichimoku_a'][-1] and
-        close[-1] < ind['ichimoku_b'][-1]
-    ):
-        return "سیگنال خروج"
+    # بررسی MACD
+    if last['MACD_12_26_9'] > last['MACDs_12_26_9']:
+        signals.append("MACD: سیگنال ورود")
     else:
-        return "سیگنال خنثی"
+        signals.append("MACD: سیگنال خروج")
 
-# دستور /start
+    # بررسی حجم مشکوک
+    if last['suspicious_volume']:
+        signals.append("حجم مشکوک: بررسی بیشتر توصیه می‌شود")
+
+    return "\n".join(signals)
+
+# فرمان `/start`
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "سلام! به ربات تحلیل بورس ایران خوش اومدی!\n"
-        "نام ربات: ehsan136_bot\n\n"
-        "برای تحلیل سهم، کد نماد tsetmc رو بده:\nمثلاً:\n/check 46348559193224090"
-    )
+    await update.message.reply_text("سلام! برای دریافت تحلیل سهم دستور /analyze را بزنید.")
 
-# دستور /check
-async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 1:
-        await update.message.reply_text("لطفاً کد نماد رو درست وارد کن.")
-        return
-    inscode = context.args[0]
-    try:
-        df = get_stock_data(inscode)
-        ind = calculate_indicators(df)
-        signal = generate_signal(df, ind)
-        await update.message.reply_text(
-            f"نتیجه تحلیل ({inscode}) توسط ehsan136_bot:\n\n{signal}"
-        )
-    except Exception as e:
-        await update.message.reply_text(f"خطا در تحلیل: {str(e)}")
+# فرمان `/analyze`
+async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    result = analyze_stock()
+    await update.message.reply_text(f"نتیجه تحلیل:\n{result}")
 
 # اجرای ربات
-def main():
-    TOKEN = "7899158333:AAFNxophK13V7aFE2OpCGE968M5XdyW1MGk"
+if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("check", check))
+    app.add_handler(CommandHandler("analyze", analyze))
+
     print("ربات ehsan136_bot فعال است...")
     app.run_polling()
-
-if __name__ == "__main__":
-    main()
